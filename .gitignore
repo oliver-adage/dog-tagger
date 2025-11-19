@@ -1,0 +1,4 @@
+# add environments and IDE files to gitignore
+.venv*
+doc-tag-env/
+.vscode/

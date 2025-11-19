@@ -1,0 +1,32 @@
+# Data handling & utils
+numpy==2.1.1
+pandas==2.2.3
+
+# NLP (for keyword extraction / classification)
+scikit-learn==1.5.2
+transformers
+torch==2.2.0         # ensure compatibility with transformers; CPU version by default
+
+# Optional but useful for local logging and config
+python-dotenv==1.0.1
+loguru==0.7.2
+
+
+# PDF text & structure
+pymupdf==1.26.0          # current 2025 release; Windows wheels; avoid 3.13t builds. 
+pdfminer.six==20251107   # recent build; explicit Py3.13 support landed earlier in 2025.
+
+# OCR fallback (CPU)
+paddlepaddle==3.2.1      # latest CPU package on PyPI (Oct 2025)
+paddleocr==3.3.1         # latest (Oct 2025); v3 line
+
+# ONNX inference (not necessary yet, but for future use)
+onnx==1.16.2             # stable line; PyPI wheels exist
+onnxruntime==1.23.2      # latest line; Python 3.13 wheels added
+
+# API
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.4
+python-multipart==0.0.9
+
