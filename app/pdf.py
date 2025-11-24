@@ -4,7 +4,14 @@
 # creates a clean dictionary of extracted texts from PDF files.
 
 from pathlib import Path
-from typing import Union, Dict
+from typing import Any, Dict, Sequence, Union
+
+try:  # Prefer package-style imports when available.
+    from app.DocumentLayout import DocumentLayout, PageLayout, TextBlock
+    from app.layout_config import LAYOUT_GRID, GridSlice
+except ImportError:  # Fallback for scripts executed from within the app folder.
+    from DocumentLayout import DocumentLayout, PageLayout, TextBlock  # type: ignore
+    from layout_config import LAYOUT_GRID, GridSlice  # type: ignore
 
 # Prefer fast PDF extraction via PyMuPDF; fallback to pdfminer.six
 try:
@@ -48,7 +55,93 @@ def _extract_text_from_pdf(path: Path) -> str:
     raise RuntimeError("No PDF backend available. Install 'pymupdf' or 'pdfminer.six'.")
 
 
-def _extract_layout_from_pdf(path: Union[str,Path]) -> DocumentLayout:
+def _select_slice(value: float, slices: Sequence[GridSlice]) -> GridSlice:
+    """
+    Return the slice whose normalized [start, end) range contains ``value``.
+    Falls back to the last slice when rounding pushes the value to the edge.
+    """
+    epsilon = 1e-6
+    for slice_def in slices:
+        upper = slice_def.end + (epsilon if slice_def.end == 1.0 else 0.0)
+        if slice_def.start <= value < upper:
+            return slice_def
+    return slices[-1]
+
+
+def _extract_layout_from_pdf(path: Union[str, Path]) -> DocumentLayout:
+    """
+    Extract a structured layout from a PDF and split each page into
+    coarse regions (top, middle, bottom).
+    """
+    pdf_path = Path(path)
+    if not pdf_path.exists() or not pdf_path.is_file():
+        raise FileNotFoundError(f"File not found: {pdf_path}")
+
+    if _PDF_BACKEND != "pymupdf":
+        raise RuntimeError("Layout extraction currently requires PyMuPDF.")
+
+    layout = DocumentLayout()
+    layout.add_metadata("file_name", pdf_path.name)
+    layout.add_metadata("pdf_backend", _PDF_BACKEND)
+
+    with fitz.open(pdf_path) as doc:  # type: ignore[name-defined]
+        metadata = doc.metadata or {}
+        for key, value in metadata.items():
+            if value:
+                layout.add_metadata(key, str(value))
+        layout.add_metadata("page_count", str(doc.page_count))
+
+        for page in doc:
+            page_w = float(page.rect.width)
+            page_h = float(page.rect.height)
+            page_layout = PageLayout(
+                page_w,
+                page_h,
+                origin="top-left",
+                rotation=int(page.rotation),
+            )
+
+            region_map: dict[str, dict[str, Any]] = {}
+            for row in LAYOUT_GRID.rows:
+                for column in LAYOUT_GRID.columns:
+                    region_key = f"{row.name}:{column.name}"
+                    region_map[region_key] = {
+                        "bbox": (
+                            column.start * page_w,
+                            row.start * page_h,
+                            column.end * page_w,
+                            row.end * page_h,
+                        ),
+                        "texts": [],
+                        "label": f"{row.name}-{column.name}",
+                    }
+
+            for block in page.get_text("blocks"):
+                if len(block) < 5:
+                    continue
+                x0, y0, x1, y1, block_text = block[:5]
+                text = (block_text or "").strip()
+                if not text:
+                    continue
+                cx_norm = ((x0 + x1) / 2.0) / page_w if page_w else 0.0
+                cy_norm = ((y0 + y1) / 2.0) / page_h if page_h else 0.0
+                row_slice = _select_slice(cy_norm, LAYOUT_GRID.rows)
+                column_slice = _select_slice(cx_norm, LAYOUT_GRID.columns)
+                key = f"{row_slice.name}:{column_slice.name}"
+                region_map[key]["texts"].append(text)
+
+            for region in region_map.values():
+                texts = region.get("texts", [])
+                if not texts:
+                    continue
+                combined_text = "\n".join(texts)
+                bbox = region["bbox"]
+                block = TextBlock(bbox, combined_text)
+                page_layout.append(block)
+
+            layout.add_page(page_layout)
+
+    return layout
 
 
 def extract_text_from_file(file_path: Union[str, Path]) -> str:
