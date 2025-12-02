@@ -38,6 +38,8 @@ class Block(BaseModel):
 class Page(BaseModel):
     number: int               # 1-based page number
     blocks: List[Block]
+    wdith: float
+    height: float
 
 
 class DocumentLayout(BaseModel):
@@ -48,6 +50,23 @@ class DocumentLayout(BaseModel):
     def blocks(self) -> List[Block]:
         """Convenience: all blocks in document as a flat list."""
         return [b for page in self.pages for b in page.blocks]
+    
+    def page_regions(
+        self,
+        header_ratio: float = 0.2,
+        footer_ratio: float = 0.2,
+    ) -> Dict[int, Dict[str, List[Block]]]:
+        """
+        For each page number, return its header/body/footer blocks.
+        """
+        regions: Dict[int, Dict[str, List[Block]]] = {}
+        for page in self.pages:
+            regions[page.number] = split_page_into_regions(
+                page,
+                header_ratio=header_ratio,
+                footer_ratio=footer_ratio,
+            )
+        return regions
 
     @classmethod
     def from_pdf(cls, path: Path) -> DocumentLayout:
@@ -63,6 +82,7 @@ class DocumentLayout(BaseModel):
         with fitz.open(path) as doc:  # type: ignore[name-defined]
             for page_no, page in enumerate(doc, start=1):
                 raw_blocks = page.get_text("blocks")
+                rect = page.rect
                 page_blocks: List[Block] = []
 
                 for (x0, y0, x1, y1, text, block_idx, block_type) in raw_blocks:
@@ -83,22 +103,60 @@ class DocumentLayout(BaseModel):
                         )
                     )
 
-                pages.append(Page(number=page_no, blocks=page_blocks))
+                pages.append(Page(
+                    number=page_no, 
+                    blocks=page_blocks,
+                    wdith=rect.width,
+                    height=rect.height,))
 
         return cls(path=path, pages=pages)
+
+
+from typing import Dict
+
+def split_page_into_regions(
+    page: Page,
+    header_ratio: float = 0.2,
+    footer_ratio: float = 0.2,
+) -> Dict[str, List[Block]]:
+    """
+    Split a Page into header / body / footer by vertical position.
+    Uses the vertical centre of each block.
+    """
+    h = page.height
+    header_max_y = h * header_ratio
+    footer_min_y = h * (1.0 - footer_ratio)
+
+    header: List[Block] = []
+    body: List[Block] = []
+    footer: List[Block] = []
+
+    for block in page.blocks:
+        _, y0, _, y1 = block.bbox
+        center_y = (y0 + y1) / 2.0
+
+        if center_y <= header_max_y:
+            header.append(block)
+        elif center_y >= footer_min_y:
+            footer.append(block)
+        else:
+            body.append(block)
+
+    return {"header": header, "body": body, "footer": footer}
 
 
 if __name__ == "__main__":
     sample_pdf_path = Path("./data/raw/Betalningsintyg.pdf")
     layout = DocumentLayout.from_pdf(sample_pdf_path)
 
-    print(f"Document: {layout.path.name}")
-    print(f"Pages: {len(layout.pages)}")
-    print(f"Total blocks: {len(layout.blocks)}")
+    regions_by_page = layout.page_regions()
 
-    # Print first few blocks of first page
-    first_page = layout.pages[0]
-    for block in first_page.blocks[:5]:
-        print("----")
-        print(f"page={block.page}, idx={block.index}, bbox={block.bbox}")
-        print(block.text)
+    first_page_regions = regions_by_page[1]
+    print("Header blocks on page 1:")
+    for b in first_page_regions["header"]:
+        print(b.bbox, b.text)
+
+    print("\nFooter blocks on page 1:")
+    for b in first_page_regions["footer"]:
+        print(b.bbox, b.text)
+
