@@ -1,3 +1,4 @@
+from __future__ import annotations
 # define class document layout that saves layout information and text blocks that are extracted
 # from pdfs and used to extract key information like supplier from header and total amount from body
 # fields: metadata: dict with metadata information like author, title, creation date, pages, size
@@ -7,196 +8,155 @@
 # import list, union, dict from typing
 from typing import List, Dict, Union, Tuple, Optional
 
+# Prefer fast PDF extraction via PyMuPDF; fallback to pdfminer.six
+try:
+    import fitz  # type: ignore  # PyMuPDF
+    _PDF_BACKEND = "pymupdf"
+except Exception:
+    try:
+        from pdfminer.high_level import extract_text as _pdfminer_extract_text  # type: ignore
+        _PDF_BACKEND = "pdfminer"
+    except Exception:
+        _PDF_BACKEND = None
 
-def to_bbox_norm(
-    bbox: Tuple[float, float, float, float],
-    page_w: float,
-    page_h: float,
-    *,
-    origin: str = "top-left",
-    rotation: int = 0,
-    clip: bool = True,
-    precision: int = 6,
-) -> Tuple[float, float, float, float]:
-    """
-    Normalize a PDF bbox to [0,1] coordinates with a top-left origin.
 
-    Args:
-        bbox: (x0, y0, x1, y1) in page coordinate space.
-        page_w: Page width in points.
-        page_h: Page height in points.
-        origin: 'top-left' (default) or 'bottom-left' for the input bbox.
-        rotation: Page rotation in degrees (0, 90, 180, 270).
-        clip: Clamp coordinates to page extents before normalization.
-        precision: Decimal places to round the normalized coords.
+from pathlib import Path
+from typing import Any, List, Tuple
+from pydantic import BaseModel
 
-    Returns:
-        (x0_n, y0_n, x1_n, y1_n) each in [0,1].
-    """
-    if page_w <= 0 or page_h <= 0:
-        raise ValueError("page_w and page_h must be positive")
 
-    x0, y0, x1, y1 = bbox
-    # Order the box
-    if x0 > x1:
-        x0, x1 = x1, x0
-    if y0 > y1:
-        y0, y1 = y1, y0
+BBox = Tuple[float, float, float, float]   # (x0, y0, x1, y1)
 
-    # Convert origin to top-left if needed (pdfminer-like is bottom-left)
-    if origin.lower() == "bottom-left":
-        y0, y1 = page_h - y1, page_h - y0
-    elif origin.lower() != "top-left":
-        raise ValueError("origin must be 'top-left' or 'bottom-left'")
 
-    # Apply rotation if coordinates are not rotation-aligned
-    rot = rotation % 360
-    if rot not in (0, 90, 180, 270):
-        raise ValueError("rotation must be 0, 90, 180, or 270")
+class Block(BaseModel):
+    page: int                 # 1-based page number
+    index: int                # block index on that page
+    bbox: BBox                # coordinates on the page
+    text: str                 # cleaned text content
 
-    pw, ph = page_w, page_h
-    if rot == 90:
-        # (x, y) -> (ph - y, x)
-        x0, y0 = ph - y0, x0
-        x1, y1 = ph - y1, x1
-        pw, ph = page_h, page_w
-    elif rot == 180:
-        x0, y0 = pw - x0, ph - y0
-        x1, y1 = pw - x1, ph - y1
-    elif rot == 270:
-        # (x, y) -> (y, pw - x)
-        x0, y0 = y0, pw - x0
-        x1, y1 = y1, pw - x1
-        pw, ph = page_h, page_w
 
-    # Re-order after rotation
-    if x0 > x1:
-        x0, x1 = x1, x0
-    if y0 > y1:
-        y0, y1 = y1, y0
+class Page(BaseModel):
+    number: int               # 1-based page number
+    blocks: List[Block]
+    wdith: float
+    height: float
 
-    # Clip to page bounds if requested
-    if clip:
-        x0 = max(0.0, min(pw, x0))
-        x1 = max(0.0, min(pw, x1))
-        y0 = max(0.0, min(ph, y0))
-        y1 = max(0.0, min(ph, y1))
 
-    # Normalize
-    x0_n = x0 / pw
-    x1_n = x1 / pw
-    y0_n = y0 / ph
-    y1_n = y1 / ph
+class DocumentLayout(BaseModel):
+    path: Path
+    pages: List[Page]
 
-    # Final order and rounding
-    if x0_n > x1_n:
-        x0_n, x1_n = x1_n, x0_n
-    if y0_n > y1_n:
-        y0_n, y1_n = y1_n, y0_n
-
-    if precision is not None and precision >= 0:
-        r = lambda v: round(v, precision)
-        return (r(x0_n), r(y0_n), r(x1_n), r(y1_n))
-    return (x0_n, y0_n, x1_n, y1_n)
-
-class TextBlock:
-    def __init__(self, bbox: tuple[float, float, float, float], text: str):
-        self.bbox = bbox  # (x0, y0, x1, y1)
-        self.text = text
-        # Will be set by make_bbox_norm when page size is known
-        self.bbox_norm: Optional[Tuple[float, float, float, float]] = None
-
-    def make_bbox_norm(
+    @property
+    def blocks(self) -> List[Block]:
+        """Convenience: all blocks in document as a flat list."""
+        return [b for page in self.pages for b in page.blocks]
+    
+    def page_regions(
         self,
-        page_w: float,
-        page_h: float,
-        *,
-        origin: str = "top-left",
-        rotation: int = 0,
-        precision: int = 6,
-    ) -> Tuple[float, float, float, float]:
+        header_ratio: float = 0.2,
+        footer_ratio: float = 0.2,
+    ) -> Dict[int, Dict[str, List[Block]]]:
         """
-        Compute and cache a standardized normalized bbox for this block.
+        For each page number, return its header/body/footer blocks.
         """
-        self.bbox_norm = to_bbox_norm(
-            self.bbox,
-            page_w,
-            page_h,
-            origin=origin,
-            rotation=rotation,
-            precision=precision,
-        )
-        return self.bbox_norm
+        regions: Dict[int, Dict[str, List[Block]]] = {}
+        for page in self.pages:
+            regions[page.number] = split_page_into_regions(
+                page,
+                header_ratio=header_ratio,
+                footer_ratio=footer_ratio,
+            )
+        return regions
+
+    @classmethod
+    def from_pdf(cls, path: Path) -> DocumentLayout:
+        """Build a DocumentLayout from a PDF using the configured backend."""
+        if _PDF_BACKEND != "pymupdf":
+            raise RuntimeError(
+                "No PDF backend available for layout. "
+                "Install 'pymupdf' or add another backend."
+            )
+
+        pages: List[Page] = []
+
+        with fitz.open(path) as doc:  # type: ignore[name-defined]
+            for page_no, page in enumerate(doc, start=1):
+                raw_blocks = page.get_text("blocks")
+                rect = page.rect
+                page_blocks: List[Block] = []
+
+                for (x0, y0, x1, y1, text, block_idx, block_type) in raw_blocks:
+                    # keep only text blocks
+                    if block_type != 0:
+                        continue
+
+                    cleaned = text.strip()
+                    if not cleaned:
+                        continue
+
+                    page_blocks.append(
+                        Block(
+                            page=page_no,
+                            index=block_idx,
+                            bbox=(x0, y0, x1, y1),
+                            text=cleaned,
+                        )
+                    )
+
+                pages.append(Page(
+                    number=page_no, 
+                    blocks=page_blocks,
+                    wdith=rect.width,
+                    height=rect.height,))
+
+        return cls(path=path, pages=pages)
 
 
-class PageLayout:
-    def __init__(
-        self,
-        page_w: float,
-        page_h: float,
-        *,
-        origin: str = "top-left",
-        rotation: int = 0,
-    ):
-        self.page_w = page_w
-        self.page_h = page_h
-        self.origin = origin
-        self.rotation = rotation
-        self.text_blocks: List[TextBlock] = []
+from typing import Dict
 
-    def append(self, text_block: TextBlock):
-        self.text_blocks.append(text_block)
-        # Automatically compute normalized bbox when a block is added
-        text_block.make_bbox_norm(
-            self.page_w,
-            self.page_h,
-            origin=self.origin,
-            rotation=self.rotation,
-        )
+def split_page_into_regions(
+    page: Page,
+    header_ratio: float = 0.2,
+    footer_ratio: float = 0.2,
+) -> Dict[str, List[Block]]:
+    """
+    Split a Page into header / body / footer by vertical position.
+    Uses the vertical centre of each block.
+    """
+    h = page.height
+    header_max_y = h * header_ratio
+    footer_min_y = h * (1.0 - footer_ratio)
 
-class DocumentLayout:
-    def __init__(self):
-        self.metadata: Dict[str, str] = {}
-        self.pages: List[PageLayout] = []
+    header: List[Block] = []
+    body: List[Block] = []
+    footer: List[Block] = []
 
-    def add_metadata(self, key: str, value: str):
-        self.metadata[key] = value
+    for block in page.blocks:
+        _, y0, _, y1 = block.bbox
+        center_y = (y0 + y1) / 2.0
 
-    def add_page(self, page: PageLayout):
-        # Ensure all existing blocks on the page have normalized boxes
-        for block in page.text_blocks:
-            if getattr(block, "bbox_norm", None) is None:
-                block.make_bbox_norm(
-                    page.page_w,
-                    page.page_h,
-                    origin=page.origin,
-                    rotation=page.rotation,
-                )
-        self.pages.append(page)
-
-    def add_text_block_to_page(self, page_index: int, text_block: TextBlock):
-        if page_index < len(self.pages):
-            self.pages[page_index].append(text_block)
+        if center_y <= header_max_y:
+            header.append(block)
+        elif center_y >= footer_min_y:
+            footer.append(block)
         else:
-            raise IndexError("Page index out of range")
+            body.append(block)
+
+    return {"header": header, "body": body, "footer": footer}
 
 
 if __name__ == "__main__":
-    doc_layout = DocumentLayout()
-    doc_layout.add_metadata("author", "John Doe")
-    doc_layout.add_metadata("title", "Sample Document")
+    sample_pdf_path = Path("./data/raw/Betalningsintyg.pdf")
+    layout = DocumentLayout.from_pdf(sample_pdf_path)
 
-    # Create an A4 page in points: 595 x 842
-    page1 = PageLayout(595.0, 842.0)
-    tb1 = TextBlock((0, 0, 100, 50), "This is a header")
-    tb2 = TextBlock((0, 60, 100, 200), "This is the body text of the document.")
-    page1.append(tb1)
-    page1.append(tb2)
+    regions_by_page = layout.page_regions()
 
-    doc_layout.add_page(page1)
+    first_page_regions = regions_by_page[1]
+    print("Header blocks on page 1:")
+    for b in first_page_regions["header"]:
+        print(b.bbox, b.text)
 
-    print("Document Metadata:", doc_layout.metadata)
-    for i, page in enumerate(doc_layout.pages):
-        print(f"Page {i+1} Text Blocks:")
-        for block in page.text_blocks:
-            print(f"  BBox: {block.bbox}, BBox_norm: {block.bbox_norm}, Text: {block.text}")
+    print("\nFooter blocks on page 1:")
+    for b in first_page_regions["footer"]:
+        print(b.bbox, b.text)
+
