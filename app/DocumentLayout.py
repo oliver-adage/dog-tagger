@@ -128,29 +128,3 @@ class DocumentLayout(BaseModel):
         return cls(path=path, pages=pages)
 
 
-if __name__ == "__main__":
-    try:
-        # when run as a package
-        from .document_context import DocumentContext
-    except Exception:
-        # fallback for direct execution
-        from document_context import DocumentContext
-
-    raw_dir = Path("./data/raw")
-    for pdf_path in sorted(raw_dir.glob("*.pdf")):
-        print(f"\n=== {pdf_path.name} ===")
-        layout = DocumentLayout.from_pdf(pdf_path)
-        context = DocumentContext.from_layout(layout)
-
-        for page in layout.pages:
-            print(f"\nPage {page.number} lines:")
-            for line in page.lines:
-                print(line.number, line.bbox, line.text)
-
-        if context.items:
-            print("\nExtracted lines with detected amounts:")
-            for item in context.items:
-                print(
-                    f"page {item.page} line {item.line_number}: "
-                    f"text='{item.text}' bbox={item.bbox}"
-                )
