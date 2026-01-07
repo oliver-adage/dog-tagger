@@ -31,10 +31,10 @@ class BertLineClassifier:
     def __init__(self, model_name: str = "facebook/bart-large-mnli") -> None:
         # map human-readable descriptions → simple tags
         self.label_descriptions = {
-            "amount_line": "line describing an individual item an amount at the end",
-            "total_line": "line describing the total amount payable at the end",
-            "header": "line containing supplier or customer information in the header",
-            "other": "line that is not about invoice amounts or header information",
+            "item_line": "item",
+            "total_line": "total",
+            "header": "supplier name or adress",
+            "other": "not item, total or adress",
         }
         self.labels = list(self.label_descriptions.keys())
 
