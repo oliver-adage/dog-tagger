@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Dict, List, Optional
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -61,6 +62,7 @@ class DocumentContext(BaseModel):
     def from_layout(cls, layout: DocumentLayout, classifier=None) -> "DocumentContext":
         items: List[ClassifiedLine] = []
         item_totals: Dict[str, float] = {}
+        last_total_amount: Optional[float] = None
         amount_re = re.compile(r"(-?\d{1,3}(?:[ \u00A0]\d{3})*(?:[.,]\d{2})|-?\d+(?:[.,]\d{2}))\s*$")
 
         for page in layout.pages:
@@ -89,8 +91,19 @@ class DocumentContext(BaseModel):
                         name = line.text[: match.start()].strip()
                         if name:
                             item_totals[name] = item_totals.get(name, 0.0) + amount
+                    if classifier is not None and classified.classification == "total_line":
+                        last_total_amount = amount
 
-        total = sum(item_totals.values())
+        sum_items = sum(item_totals.values())
+        if last_total_amount is not None:
+            total = last_total_amount
+            if abs(sum_items - total) > 0.01:
+                warnings.warn(
+                    f"Item sum {sum_items:.2f} does not match total {total:.2f}.",
+                    RuntimeWarning,
+                )
+        else:
+            total = sum_items
         return cls(layout=layout, items=items, total=total, item_totals=item_totals)
 
 if __name__ == "__main__":

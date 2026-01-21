@@ -33,6 +33,7 @@ class BertLineClassifier:
         self.label_descriptions = {
             "item_line": "item",
             "total_line": "total",
+            "subtotal_line": "subtotal",
             "balance_due": "balance due",
             "header": "supplier name or adress",
             "other": "not item, total or adress",
