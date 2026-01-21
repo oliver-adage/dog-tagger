@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import Dict, List, Optional
 from pathlib import Path
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 try:
     # package import
@@ -27,10 +27,40 @@ class ClassifiedLine:
 class DocumentContext(BaseModel):
     layout: DocumentLayout
     items: List[ClassifiedLine]
+    total: float = 0.0
+    item_totals: Dict[str, float] = Field(default_factory=dict)
+
+    @staticmethod
+    def _parse_amount(raw: str) -> Optional[float]:
+        cleaned = raw.replace(" ", "").replace("\u00A0", "")
+        if not cleaned:
+            return None
+
+        sign = ""
+        if cleaned[0] == "-":
+            sign = "-"
+            cleaned = cleaned[1:]
+
+        last_comma = cleaned.rfind(",")
+        last_dot = cleaned.rfind(".")
+        decimal_index = max(last_comma, last_dot)
+
+        if decimal_index >= 0:
+            integer_part = cleaned[:decimal_index].replace(",", "").replace(".", "")
+            fraction_part = cleaned[decimal_index + 1 :]
+            normalized = f"{sign}{integer_part}.{fraction_part}"
+        else:
+            normalized = f"{sign}{cleaned.replace(',', '').replace('.', '')}"
+
+        try:
+            return float(normalized)
+        except ValueError:
+            return None
 
     @classmethod
-    def from_layout(cls, layout: DocumentLayout) -> "DocumentContext":
+    def from_layout(cls, layout: DocumentLayout, classifier=None) -> "DocumentContext":
         items: List[ClassifiedLine] = []
+        item_totals: Dict[str, float] = {}
         amount_re = re.compile(r"(-?\d{1,3}(?:[ \u00A0]\d{3})*(?:[.,]\d{2})|-?\d+(?:[.,]\d{2}))\s*$")
 
         for page in layout.pages:
@@ -39,28 +69,29 @@ class DocumentContext(BaseModel):
                 if not match:
                     continue
 
-                items.append(
-                    ClassifiedLine(
-                        page=page.number,
-                        line_number=line.number,
-                        text=line.text,
-                        bbox=line.bbox,
-                    )
+                classified = ClassifiedLine(
+                    page=page.number,
+                    line_number=line.number,
+                    text=line.text,
+                    bbox=line.bbox,
                 )
+                if classifier is not None:
+                    if hasattr(classifier, "classify"):
+                        classified.classification = classifier.classify(classified)
+                    else:
+                        classified.classification = classifier(classified)
 
-        return cls(layout=layout, items=items)
+                items.append(classified)
 
-    def classify_lines(self, classifier) -> None:
-        """
-        Classify each extracted line using an external classifier.
-        The classifier can be any callable or object with `classify(line)` method.
-        """
-        for line in self.items:
-            if hasattr(classifier, "classify"):
-                line.classification = classifier.classify(line)
-            else:
-                line.classification = classifier(line)
+                amount = cls._parse_amount(match.group(1))
+                if amount is not None:
+                    if classifier is None or classified.classification == "item_line":
+                        name = line.text[: match.start()].strip()
+                        if name:
+                            item_totals[name] = item_totals.get(name, 0.0) + amount
 
+        total = sum(item_totals.values())
+        return cls(layout=layout, items=items, total=total, item_totals=item_totals)
 
 if __name__ == "__main__":
     try:
@@ -72,8 +103,7 @@ if __name__ == "__main__":
     for pdf_path in sorted(raw_dir.glob("*.pdf")):
         print(f"\n=== {pdf_path.name} ===")
         layout = DocumentLayout.from_pdf(pdf_path)
-        ctx = DocumentContext.from_layout(layout)
-        ctx.classify_lines(HeuristicLineClassifier())
+        ctx = DocumentContext.from_layout(layout, classifier=HeuristicLineClassifier())
         if not ctx.items:
             print("No lines with detectable trailing amounts.")
             continue
